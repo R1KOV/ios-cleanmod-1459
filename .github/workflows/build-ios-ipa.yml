@@ -1,0 +1,121 @@
+name: Build FlacLess iOS (.ipa)
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: "Bundle display version (e.g. 2.5.1)"
+        required: false
+        default: "2.5.1"
+      create_release:
+        description: "Also publish .ipa to GitHub Releases?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-ios-ipa:
+    name: Build Unsigned iOS IPA (arm64)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Select latest Xcode
+        run: |
+          XCODE_APP=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1 || true)
+          if [ -n "$XCODE_APP" ]; then
+            sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Build Vite web bundle
+        run: npm run build
+
+      - name: Sync Capacitor iOS project
+        run: npx cap sync ios
+
+      - name: Resolve Swift Package Manager dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project ios/App/App.xcodeproj \
+            -scheme App
+
+      - name: Build Release App.app (Unsigned arm64)
+        env:
+          APP_VER: ${{ github.event.inputs.app_version || '2.5.1' }}
+        run: |
+          mkdir -p dist-ios
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath dist-ios/DerivedData \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            IPHONEOS_DEPLOYMENT_TARGET=15.0 \
+            MARKETING_VERSION="$APP_VER" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package FlacLess-iOS-unsigned.ipa
+        run: |
+          APP_PATH=$(find dist-ios/DerivedData/Build/Products/Release-iphoneos -maxdepth 2 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "Error: App.app not found!"
+            exit 1
+          fi
+          rm -rf dist-ios/Payload
+          mkdir -p dist-ios/Payload
+          cp -R "$APP_PATH" dist-ios/Payload/App.app
+          rm -rf dist-ios/Payload/App.app/_CodeSignature
+          (cd dist-ios && zip -qr FlacLess-iOS-unsigned.ipa Payload)
+          rm -rf dist-ios/Payload dist-ios/DerivedData
+          ls -lh dist-ios/FlacLess-iOS-unsigned.ipa
+
+      - name: Upload FlacLess-iOS-unsigned.ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlacLess-iOS-unsigned
+          path: dist-ios/FlacLess-iOS-unsigned.ipa
+          retention-days: 30
+
+      - name: Publish GitHub Release (on tag or manual option)
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.create_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('ios-build-{0}', github.run_number) }}
+          name: FlacLess iOS v${{ github.event.inputs.app_version || '2.5.1' }} (Build #${{ github.run_number }})
+          files: dist-ios/FlacLess-iOS-unsigned.ipa
+          generate_release_notes: true
