@@ -1,0 +1,6 @@
+{
+  "name": "Monochrome iOS",
+  "description": "High-resolution lossless music streaming and offline downloads adapted for iPhone and iPad with Capacitor and native AVFoundation audio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
